@@ -1,11 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use arcium_anchor::prelude::*;
-use arcium_client::idl::arcium::types::CallbackAccount;
 
 // Computation definition offsets for our MPC instructions
 const COMP_DEF_OFFSET_INIT_ORDER_BOOK: u32 = comp_def_offset("init_order_book");
 const COMP_DEF_OFFSET_SUBMIT_ORDER: u32 = comp_def_offset("submit_order");
+const COMP_DEF_OFFSET_CANCEL_ORDER: u32 = comp_def_offset("cancel_order");
 const COMP_DEF_OFFSET_MATCH_ORDERS: u32 = comp_def_offset("match_orders");
 
 declare_id!("5AVcTFBTCbR8CYcJYcqp7FgszwQMgEh5TySAUspb7y4E");
@@ -59,12 +59,7 @@ pub mod conf_hide {
             computation_offset,
             args,
             None,
-            vec![InitOrderBookCallback::callback_ix(&[
-                CallbackAccount {
-                    pubkey: ctx.accounts.trading_pair.key(),
-                    is_writable: true,
-                },
-            ])],
+            vec![InitOrderBookCallback::callback_ix(&[])],
         )?;
         Ok(())
     }
@@ -73,10 +68,10 @@ pub mod conf_hide {
     #[arcium_callback(encrypted_ix = "init_order_book")]
     pub fn init_order_book_callback(
         ctx: Context<InitOrderBookCallback>,
-        output: ComputationOutputs<MXEEncryptedStruct<1>>,
+        output: ComputationOutputs<InitOrderBookOutput>,
     ) -> Result<()> {
         let order_book = match output {
-            ComputationOutputs::Success(order_book_data) => order_book_data,
+            ComputationOutputs::Success(InitOrderBookOutput { field_0 }) => field_0,
             _ => return Err(ErrorCode::AbortedComputation.into()),
         };
 
@@ -96,34 +91,63 @@ pub mod conf_hide {
         ctx: Context<SubmitOrder>,
         computation_offset: u64,
         trading_pair_id: u64,
-        price: u64,
-        quantity: u64,
-        is_buy: bool,
         client_pubkey: [u8; 32],
         client_nonce: u128,
+        encrypted_price: [u8; 32],
+        encrypted_quantity: [u8; 32],
+        encrypted_is_buy: [u8; 32],
+        encrypted_trader_id: [u8; 32],
     ) -> Result<()> {
         require!(
             ctx.accounts.trading_pair.is_active,
             ErrorCode::TradingPairInactive
         );
 
-        // Validate order parameters
-        require!(price > 0, ErrorCode::InvalidPrice);
-        require!(quantity > 0, ErrorCode::InvalidQuantity);
+        // Note: We can't validate encrypted order parameters directly
+        // Validation will happen in the MPC circuit
 
-        // For MVP, we'll skip balance validation and implement it later
-        // In production, would check user has sufficient tokens
+        // Balance validation: Check if user provided token accounts
+        // This is a basic validation - full validation would need client-side checks
+        // or additional MPC circuits for balance verification
+        if ctx.accounts.user_base_token_account.is_some() {
+            let base_account = ctx.accounts.user_base_token_account.as_ref().unwrap();
+            require!(
+                base_account.mint == ctx.accounts.trading_pair.base_mint,
+                ErrorCode::InvalidTokenAccount
+            );
+            require!(
+                base_account.owner == ctx.accounts.payer.key(),
+                ErrorCode::InvalidTokenAccount
+            );
+        }
+
+        if ctx.accounts.user_quote_token_account.is_some() {
+            let quote_account = ctx.accounts.user_quote_token_account.as_ref().unwrap();
+            require!(
+                quote_account.mint == ctx.accounts.trading_pair.quote_mint,
+                ErrorCode::InvalidTokenAccount
+            );
+            require!(
+                quote_account.owner == ctx.accounts.payer.key(),
+                ErrorCode::InvalidTokenAccount
+            );
+        }
+
+        // TODO: For production, implement additional balance checks:
+        // 1. Client-side balance validation before encryption
+        // 2. MPC circuit to verify sufficient balance within encrypted computation
+        // 3. Reserve tokens during order submission to prevent double-spending
 
         // Prepare encrypted order arguments
         let timestamp = Clock::get()?.unix_timestamp as u64;
         let args = vec![
-            // Order data
+            // Order data (encrypted by client)
             Argument::ArcisPubkey(client_pubkey),
             Argument::PlaintextU128(client_nonce),
-            Argument::EncryptedU64([0; 32]), // price (encrypted)
-            Argument::EncryptedU64([0; 32]), // quantity (encrypted)
-            Argument::EncryptedBool([0; 32]), // is_buy (encrypted)
-            Argument::EncryptedU128([0; 32]), // trader_id (encrypted)
+            Argument::EncryptedU64(encrypted_price),
+            Argument::EncryptedU64(encrypted_quantity),
+            Argument::EncryptedBool(encrypted_is_buy),
+            Argument::EncryptedU128(encrypted_trader_id),
             Argument::PlaintextU64(timestamp),
             // Current order book
             Argument::PlaintextU128(ctx.accounts.trading_pair.order_book_nonce),
@@ -137,12 +161,7 @@ pub mod conf_hide {
             computation_offset,
             args,
             None,
-            vec![SubmitOrderCallback::callback_ix(&[
-                CallbackAccount {
-                    pubkey: ctx.accounts.trading_pair.key(),
-                    is_writable: true,
-                },
-            ])],
+            vec![SubmitOrderCallback::callback_ix(&[])],
         )?;
 
         Ok(())
@@ -152,10 +171,10 @@ pub mod conf_hide {
     #[arcium_callback(encrypted_ix = "submit_order")]
     pub fn submit_order_callback(
         ctx: Context<SubmitOrderCallback>,
-        output: ComputationOutputs<MXEEncryptedStruct<1>>,
+        output: ComputationOutputs<SubmitOrderOutput>,
     ) -> Result<()> {
         let updated_book = match output {
-            ComputationOutputs::Success(order_book_data) => order_book_data,
+            ComputationOutputs::Success(SubmitOrderOutput { field_0 }) => field_0,
             _ => return Err(ErrorCode::AbortedComputation.into()),
         };
 
@@ -168,6 +187,69 @@ pub mod conf_hide {
             trading_pair_id: trading_pair.trading_pair_id,
             order_book_nonce: updated_book.nonce,
             total_orders: trading_pair.total_orders,
+        });
+
+        Ok(())
+    }
+
+    /// Cancel an existing order
+    pub fn cancel_order(
+        ctx: Context<CancelOrder>,
+        computation_offset: u64,
+        trading_pair_id: u64,
+        client_pubkey: [u8; 32],
+        client_nonce: u128,
+        encrypted_order_id: [u8; 32],
+        encrypted_trader_id: [u8; 32],
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.trading_pair.is_active,
+            ErrorCode::TradingPairInactive
+        );
+
+        // Prepare encrypted cancellation arguments
+        let args = vec![
+            // Cancellation data (encrypted by client)
+            Argument::ArcisPubkey(client_pubkey),
+            Argument::PlaintextU128(client_nonce),
+            Argument::EncryptedU128(encrypted_order_id),
+            Argument::EncryptedU128(encrypted_trader_id),
+            // Current order book
+            Argument::PlaintextU128(ctx.accounts.trading_pair.order_book_nonce),
+            Argument::Account(ctx.accounts.trading_pair.key(), 8, 32), // order book data
+        ];
+
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            None,
+            vec![CancelOrderCallback::callback_ix(&[])],
+        )?;
+
+        Ok(())
+    }
+
+    /// Callback handler for order cancellation
+    #[arcium_callback(encrypted_ix = "cancel_order")]
+    pub fn cancel_order_callback(
+        ctx: Context<CancelOrderCallback>,
+        output: ComputationOutputs<CancelOrderOutput>,
+    ) -> Result<()> {
+        let updated_book = match output {
+            ComputationOutputs::Success(CancelOrderOutput { field_0 }) => field_0,
+            _ => return Err(ErrorCode::AbortedComputation.into()),
+        };
+
+        let trading_pair = &mut ctx.accounts.trading_pair;
+        trading_pair.order_book = updated_book.ciphertexts[0];
+        trading_pair.order_book_nonce = updated_book.nonce;
+
+        emit!(OrderCancelledEvent {
+            trading_pair_id: trading_pair.trading_pair_id,
+            order_book_nonce: updated_book.nonce,
         });
 
         Ok(())
@@ -200,12 +282,7 @@ pub mod conf_hide {
             computation_offset,
             args,
             None,
-            vec![MatchOrdersCallback::callback_ix(&[
-                CallbackAccount {
-                    pubkey: ctx.accounts.trading_pair.key(),
-                    is_writable: true,
-                },
-            ])],
+            vec![MatchOrdersCallback::callback_ix(&[])],
         )?;
 
         Ok(())
@@ -215,26 +292,36 @@ pub mod conf_hide {
     #[arcium_callback(encrypted_ix = "match_orders")]
     pub fn match_orders_callback(
         ctx: Context<MatchOrdersCallback>,
-        output: ComputationOutputs<MXEEncryptedStruct<1>>,
+        output: ComputationOutputs<MatchOrdersOutput>,
     ) -> Result<()> {
         let match_result = match output {
-            ComputationOutputs::Success(match_data) => match_data,
+            ComputationOutputs::Success(MatchOrdersOutput { field_0 }) => field_0,
             _ => return Err(ErrorCode::AbortedComputation.into()),
         };
 
-        // Extract trade data and updated order book
-        // For MVP, we'll emit events about trades but not execute token transfers yet
-        // In production, would parse trades and execute token transfers
-
+        // Extract trade data and updated order book from MPC result
         let trading_pair = &mut ctx.accounts.trading_pair;
-        // Update order book with post-matching state
-        // Note: This is simplified - in production would extract from MatchResult
+        trading_pair.order_book_nonce = match_result.nonce;
 
+        // TODO: For production implementation, need to:
+        // 1. Deserialize MatchResult from match_result.ciphertexts
+        // 2. Extract individual trades from the result
+        // 3. For each trade, execute token transfers
+        // 4. Handle partial fills and order book updates
+
+        // Current limitation: MPC results are encrypted and need decryption
+        // For MVP, we emit a placeholder event showing the computation completed
         emit!(OrdersMatchedEvent {
             trading_pair_id: trading_pair.trading_pair_id,
             match_nonce: match_result.nonce,
             timestamp: Clock::get()?.unix_timestamp as u64,
         });
+
+        // In a complete implementation, we would extract trades like this:
+        // let trades = deserialize_trades_from_mpc_result(&match_result);
+        // for trade in trades {
+        //     execute_individual_trade(ctx, trade)?;
+        // }
 
         Ok(())
     }
@@ -248,9 +335,27 @@ pub mod conf_hide {
         trade_price: u64,
         trade_quantity: u64,
     ) -> Result<()> {
-        // For MVP: Simple SOL for Token swap
-        // Buyer pays: trade_price * trade_quantity in quote token (USDC)
-        // Seller pays: trade_quantity in base token (SOL equivalent)
+        // Validate trade parameters
+        require!(trade_price > 0, ErrorCode::InvalidPrice);
+        require!(trade_quantity > 0, ErrorCode::InvalidQuantity);
+
+        // Validate token accounts belong to the correct traders
+        // In production, would verify buyer_id and seller_id against account owners
+
+        // Calculate total quote amount (price * quantity)
+        let quote_amount = trade_price
+            .checked_mul(trade_quantity)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        // Verify sufficient balances before executing transfers
+        require!(
+            ctx.accounts.buyer_quote_account.amount >= quote_amount,
+            ErrorCode::InsufficientBalance
+        );
+        require!(
+            ctx.accounts.seller_base_account.amount >= trade_quantity,
+            ErrorCode::InsufficientBalance
+        );
 
         // Transfer quote tokens from buyer to seller
         let cpi_accounts = Transfer {
@@ -411,6 +516,9 @@ pub struct SubmitOrder<'info> {
         bump = trading_pair.bump,
     )]
     pub trading_pair: Account<'info, TradingPair>,
+    // User's token accounts for balance validation
+    pub user_base_token_account: Option<Account<'info, TokenAccount>>,
+    pub user_quote_token_account: Option<Account<'info, TokenAccount>>,
 }
 
 #[callback_accounts("submit_order")]
@@ -418,6 +526,60 @@ pub struct SubmitOrder<'info> {
 pub struct SubmitOrderCallback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_SUBMIT_ORDER))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: AccountInfo<'info>,
+    #[account(mut)]
+    pub trading_pair: Account<'info, TradingPair>,
+}
+
+// Cancel order accounts
+#[queue_computation_accounts("cancel_order", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64, trading_pair_id: u64)]
+pub struct CancelOrder<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    #[account(mut, address = derive_mempool_pda!())]
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!())]
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset))]
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CANCEL_ORDER))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(
+        mut,
+        seeds = [b"trading_pair", trading_pair_id.to_le_bytes().as_ref()],
+        bump = trading_pair.bump,
+    )]
+    pub trading_pair: Account<'info, TradingPair>,
+}
+
+#[callback_accounts("cancel_order")]
+#[derive(Accounts)]
+pub struct CancelOrderCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CANCEL_ORDER))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     pub instructions_sysvar: AccountInfo<'info>,
@@ -553,6 +715,12 @@ pub struct OrderSubmittedEvent {
 }
 
 #[event]
+pub struct OrderCancelledEvent {
+    pub trading_pair_id: u64,
+    pub order_book_nonce: u128,
+}
+
+#[event]
 pub struct OrdersMatchedEvent {
     pub trading_pair_id: u64,
     pub match_nonce: u128,
@@ -583,4 +751,8 @@ pub enum ErrorCode {
     MathOverflow,
     #[msg("Cluster not set")]
     ClusterNotSet,
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
+    #[msg("Insufficient balance")]
+    InsufficientBalance,
 }

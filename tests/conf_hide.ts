@@ -34,7 +34,7 @@ import { expect } from "chai";
 
 describe("ConfHide - Privacy Trading Platform", () => {
   // Configure the client to use the local cluster
-  anchor.setProvider(anchor.AnciumProvider.env());
+  anchor.setProvider(anchor.AnchorProvider.env());
   const program = anchor.workspace.ConfHide as Program<ConfHide>;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
 
@@ -272,12 +272,25 @@ describe("ConfHide - Privacy Trading Platform", () => {
 
       const computationOffset = new anchor.BN(randomBytes(8), "hex");
       const clientNonce = new anchor.BN(randomBytes(16), "hex");
-      const clientPubkey = Array.from(x25519.utils.randomSecretKey().slice(0, 32));
+      const clientKeyPair = x25519.generateKeyPair();
+      const clientPubkey = Array.from(clientKeyPair.publicKey);
 
       // Order: Buy 10 tokens at 100 USDC each
       const price = new anchor.BN(100_000_000); // 100 USDC with 6 decimals
       const quantity = new anchor.BN(10_000_000_000); // 10 tokens with 9 decimals
       const isBuy = true;
+
+      // Create shared secret with MXE
+      const mxePublicKey = getMXEPublicKey(program.programId);
+      const sharedSecret = x25519.computeSharedSecret(clientKeyPair.secretKey, mxePublicKey);
+
+      // Encrypt order data using RescueCipher
+      const cipher = new RescueCipher(sharedSecret, clientNonce.toBuffer());
+      const encryptedPrice = cipher.encrypt(price.toBuffer("le", 8));
+      const encryptedQuantity = cipher.encrypt(quantity.toBuffer("le", 8));
+      const encryptedIsBuy = cipher.encrypt(Buffer.from([isBuy ? 1 : 0]));
+      const traderId = new anchor.BN(payer.publicKey.toBuffer()).shln(96); // Use public key as trader ID
+      const encryptedTraderId = cipher.encrypt(traderId.toBuffer("le", 16));
 
       const orderEventPromise = awaitEvent("orderSubmittedEvent");
 
@@ -285,11 +298,12 @@ describe("ConfHide - Privacy Trading Platform", () => {
         .submitOrder(
           computationOffset,
           tradingPairId,
-          price,
-          quantity,
-          isBuy,
           clientPubkey,
-          clientNonce
+          clientNonce,
+          Array.from(encryptedPrice),
+          Array.from(encryptedQuantity),
+          Array.from(encryptedIsBuy),
+          Array.from(encryptedTraderId)
         )
         .accounts({
           tradingPair: tradingPairPDA,
@@ -332,12 +346,25 @@ describe("ConfHide - Privacy Trading Platform", () => {
 
       const computationOffset = new anchor.BN(randomBytes(8), "hex");
       const clientNonce = new anchor.BN(randomBytes(16), "hex");
-      const clientPubkey = Array.from(x25519.utils.randomSecretKey().slice(0, 32));
+      const clientKeyPair = x25519.generateKeyPair();
+      const clientPubkey = Array.from(clientKeyPair.publicKey);
 
       // Order: Sell 5 tokens at 95 USDC each (lower price, should match)
       const price = new anchor.BN(95_000_000); // 95 USDC with 6 decimals
       const quantity = new anchor.BN(5_000_000_000); // 5 tokens with 9 decimals
       const isBuy = false;
+
+      // Create shared secret with MXE
+      const mxePublicKey = getMXEPublicKey(program.programId);
+      const sharedSecret = x25519.computeSharedSecret(clientKeyPair.secretKey, mxePublicKey);
+
+      // Encrypt order data using RescueCipher
+      const cipher = new RescueCipher(sharedSecret, clientNonce.toBuffer());
+      const encryptedPrice = cipher.encrypt(price.toBuffer("le", 8));
+      const encryptedQuantity = cipher.encrypt(quantity.toBuffer("le", 8));
+      const encryptedIsBuy = cipher.encrypt(Buffer.from([isBuy ? 1 : 0]));
+      const traderId = new anchor.BN(payer.publicKey.toBuffer()).shln(96); // Use public key as trader ID
+      const encryptedTraderId = cipher.encrypt(traderId.toBuffer("le", 16));
 
       const orderEventPromise = awaitEvent("orderSubmittedEvent");
 
@@ -345,11 +372,12 @@ describe("ConfHide - Privacy Trading Platform", () => {
         .submitOrder(
           computationOffset,
           tradingPairId,
-          price,
-          quantity,
-          isBuy,
           clientPubkey,
-          clientNonce
+          clientNonce,
+          Array.from(encryptedPrice),
+          Array.from(encryptedQuantity),
+          Array.from(encryptedIsBuy),
+          Array.from(encryptedTraderId)
         )
         .accounts({
           tradingPair: tradingPairPDA,

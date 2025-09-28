@@ -18,7 +18,6 @@ idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-arcium-client = { default-features = false, version = "0.3.0" }
 anchor-spl = "0.31.1"
 arcium-macros = "0.3.0"
 arcium-anchor = "0.3.0"

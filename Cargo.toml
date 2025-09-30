@@ -2,6 +2,13 @@
 members = ["programs/*", "encrypted-ixs"]
 resolver = "2"
 
+[workspace.dependencies]
+# Force older versions compatible with Rust 1.79
+deranged = "0.3"
+time = "0.3.30"
+# Force getrandom v0.2.x with custom backend for Solana BPF
+getrandom = { version = "0.2", features = ["custom"] }
+
 [profile.release]
 overflow-checks = true
 lto = "fat"

@@ -26,6 +26,12 @@ pub mod conf_hide {
         Ok(())
     }
 
+    /// Initialize computation definition for order cancellation
+    pub fn init_cancel_order_comp_def(ctx: Context<InitCancelOrderCompDef>) -> Result<()> {
+        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        Ok(())
+    }
+
     /// Initialize computation definition for order matching
     pub fn init_match_orders_comp_def(ctx: Context<InitMatchOrdersCompDef>) -> Result<()> {
         init_comp_def(ctx.accounts, true, 0, None, None)?;
@@ -658,6 +664,19 @@ pub struct InitOrderBookCompDef<'info> {
 #[init_computation_definition_accounts("submit_order", payer)]
 #[derive(Accounts)]
 pub struct InitSubmitOrderCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    pub comp_def_account: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[init_computation_definition_accounts("cancel_order", payer)]
+#[derive(Accounts)]
+pub struct InitCancelOrderCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]

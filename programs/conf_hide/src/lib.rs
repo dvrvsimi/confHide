@@ -441,8 +441,10 @@ pub struct InitializeTradingPair<'info> {
     pub sign_pda_account: Account<'info, SignerAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: Verified by Arcium macros via derive_mempool_pda!() address constraint
     #[account(mut, address = derive_mempool_pda!())]
     pub mempool_account: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
     #[account(mut, address = derive_comp_pda!(computation_offset))]
@@ -500,8 +502,10 @@ pub struct SubmitOrder<'info> {
     pub sign_pda_account: Account<'info, SignerAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: Verified by Arcium macros via derive_mempool_pda!() address constraint
     #[account(mut, address = derive_mempool_pda!())]
     pub mempool_account: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
     #[account(mut, address = derive_comp_pda!(computation_offset))]
@@ -557,8 +561,10 @@ pub struct CancelOrder<'info> {
     pub sign_pda_account: Account<'info, SignerAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: Verified by Arcium macros via derive_mempool_pda!() address constraint
     #[account(mut, address = derive_mempool_pda!())]
     pub mempool_account: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
     #[account(mut, address = derive_comp_pda!(computation_offset))]
@@ -611,8 +617,10 @@ pub struct MatchOrders<'info> {
     pub sign_pda_account: Account<'info, SignerAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: Verified by Arcium macros via derive_mempool_pda!() address constraint
     #[account(mut, address = derive_mempool_pda!())]
     pub mempool_account: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
     #[account(mut, address = derive_comp_pda!(computation_offset))]

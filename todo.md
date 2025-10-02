@@ -82,6 +82,30 @@ Focus on **core private order book functionality** - users can submit encrypted 
 - **Testing**: 90%+ test coverage with comprehensive edge case handling
 - **Demo Ready**: Working devnet deployment with sample trades
 
+## **Production-Level Improvements (Post-MVP)**
+- [ ] **Advanced Order Matching Algorithm**
+  - Implement price-time priority (FIFO at same price level)
+  - Add pro-rata allocation for large orders at same price
+  - Implement self-trade prevention (same trader ID)
+  - Add minimum order size enforcement
+  - Implement maximum trade limits per matching round
+  - Order book sorting by best price, then timestamp
+  - Support for order expiration timestamps
+  - Iceberg orders (hidden quantity)
+  - Time-in-force rules (IOC, FOK, GTC)
+
+- [ ] **Scalability & Performance**
+  - Increase order book capacity beyond 10 orders per side
+  - Optimize matching algorithm complexity
+  - Batch processing for high-volume periods
+  - Multi-level order book with price levels
+
+- [ ] **Risk Management**
+  - Position limits per trader
+  - Circuit breakers for extreme price movements
+  - Pre-trade risk checks (margin, collateral)
+  - Post-trade settlement risk monitoring
+
 ## **Deliberately Excluded from MVP**
 - UI/Frontend (focus on backend functionality)
 - Advanced order types (limit/stop/conditional)

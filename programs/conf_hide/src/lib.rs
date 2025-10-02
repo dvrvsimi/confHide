@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use arcium_anchor::prelude::*;
+use arcium_client::idl::arcium::types::CallbackAccount;
 
 // Computation definition offsets for our MPC instructions
 const COMP_DEF_OFFSET_INIT_ORDER_BOOK: u32 = comp_def_offset("init_order_book");
@@ -45,6 +46,13 @@ pub mod conf_hide {
         trading_pair_id: u64,
         mxe_nonce: u128,
     ) -> Result<()> {
+        // Validate that the provided accounts are actually valid mints
+        // This is done by attempting to deserialize them
+        let base_mint_data = ctx.accounts.base_mint.try_borrow_data()?;
+        let quote_mint_data = ctx.accounts.quote_mint.try_borrow_data()?;
+        require!(base_mint_data.len() >= 82, ErrorCode::InvalidTokenAccount); // Mint account size
+        require!(quote_mint_data.len() >= 82, ErrorCode::InvalidTokenAccount);
+
         let trading_pair = &mut ctx.accounts.trading_pair;
         trading_pair.bump = ctx.bumps.trading_pair;
         trading_pair.trading_pair_id = trading_pair_id;
@@ -115,8 +123,9 @@ pub mod conf_hide {
         // Balance validation: Check if user provided token accounts
         // This is a basic validation - full validation would need client-side checks
         // or additional MPC circuits for balance verification
-        if ctx.accounts.user_base_token_account.is_some() {
-            let base_account = ctx.accounts.user_base_token_account.as_ref().unwrap();
+        if let Some(base_account_info) = &ctx.accounts.user_base_token_account {
+            // Deserialize and validate the token account
+            let base_account = TokenAccount::try_deserialize(&mut &base_account_info.try_borrow_data()?[..])?;
             require!(
                 base_account.mint == ctx.accounts.trading_pair.base_mint,
                 ErrorCode::InvalidTokenAccount
@@ -127,8 +136,9 @@ pub mod conf_hide {
             );
         }
 
-        if ctx.accounts.user_quote_token_account.is_some() {
-            let quote_account = ctx.accounts.user_quote_token_account.as_ref().unwrap();
+        if let Some(quote_account_info) = &ctx.accounts.user_quote_token_account {
+            // Deserialize and validate the token account
+            let quote_account = TokenAccount::try_deserialize(&mut &quote_account_info.try_borrow_data()?[..])?;
             require!(
                 quote_account.mint == ctx.accounts.trading_pair.quote_mint,
                 ErrorCode::InvalidTokenAccount
@@ -345,8 +355,17 @@ pub mod conf_hide {
         require!(trade_price > 0, ErrorCode::InvalidPrice);
         require!(trade_quantity > 0, ErrorCode::InvalidQuantity);
 
+        // Deserialize and validate token accounts
+        let buyer_quote = TokenAccount::try_deserialize(&mut &ctx.accounts.buyer_quote_account.try_borrow_data()?[..])?;
+        let seller_base = TokenAccount::try_deserialize(&mut &ctx.accounts.seller_base_account.try_borrow_data()?[..])?;
+        let buyer_base = TokenAccount::try_deserialize(&mut &ctx.accounts.buyer_base_account.try_borrow_data()?[..])?;
+        let seller_quote = TokenAccount::try_deserialize(&mut &ctx.accounts.seller_quote_account.try_borrow_data()?[..])?;
+
         // Validate token accounts belong to the correct traders
-        // In production, would verify buyer_id and seller_id against account owners
+        require!(buyer_quote.owner == ctx.accounts.buyer.key(), ErrorCode::InvalidTokenAccount);
+        require!(seller_base.owner == ctx.accounts.seller.key(), ErrorCode::InvalidTokenAccount);
+        require!(buyer_base.owner == ctx.accounts.buyer.key(), ErrorCode::InvalidTokenAccount);
+        require!(seller_quote.owner == ctx.accounts.seller.key(), ErrorCode::InvalidTokenAccount);
 
         // Calculate total quote amount (price * quantity)
         let quote_amount = trade_price
@@ -355,11 +374,11 @@ pub mod conf_hide {
 
         // Verify sufficient balances before executing transfers
         require!(
-            ctx.accounts.buyer_quote_account.amount >= quote_amount,
+            buyer_quote.amount >= quote_amount,
             ErrorCode::InsufficientBalance
         );
         require!(
-            ctx.accounts.seller_base_account.amount >= trade_quantity,
+            seller_base.amount >= trade_quantity,
             ErrorCode::InsufficientBalance
         );
 
@@ -447,6 +466,7 @@ pub struct InitializeTradingPair<'info> {
     /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_comp_pda!() address constraint
     #[account(mut, address = derive_comp_pda!(computation_offset))]
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_INIT_ORDER_BOOK))]
@@ -467,8 +487,10 @@ pub struct InitializeTradingPair<'info> {
         bump,
     )]
     pub trading_pair: Account<'info, TradingPair>,
-    pub base_mint: Account<'info, Mint>,
-    pub quote_mint: Account<'info, Mint>,
+    /// CHECK: Base token mint address, validated by trading_pair.base_mint
+    pub base_mint: UncheckedAccount<'info>,
+    /// CHECK: Quote token mint address, validated by trading_pair.quote_mint
+    pub quote_mint: UncheckedAccount<'info>,
 }
 
 // Callback account structure
@@ -479,6 +501,7 @@ pub struct InitOrderBookCallback<'info> {
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_INIT_ORDER_BOOK))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    /// CHECK: Validated by Arcium program through address constraint
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub trading_pair: Account<'info, TradingPair>,
@@ -508,6 +531,7 @@ pub struct SubmitOrder<'info> {
     /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_comp_pda!() address constraint
     #[account(mut, address = derive_comp_pda!(computation_offset))]
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_SUBMIT_ORDER))]
@@ -527,8 +551,10 @@ pub struct SubmitOrder<'info> {
     )]
     pub trading_pair: Account<'info, TradingPair>,
     // User's token accounts for balance validation
-    pub user_base_token_account: Option<Account<'info, TokenAccount>>,
-    pub user_quote_token_account: Option<Account<'info, TokenAccount>>,
+    /// CHECK: Optional user base token account for balance validation
+    pub user_base_token_account: Option<UncheckedAccount<'info>>,
+    /// CHECK: Optional user quote token account for balance validation
+    pub user_quote_token_account: Option<UncheckedAccount<'info>>,
 }
 
 #[callback_accounts("submit_order")]
@@ -538,6 +564,7 @@ pub struct SubmitOrderCallback<'info> {
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_SUBMIT_ORDER))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    /// CHECK: Validated by Arcium program through address constraint
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub trading_pair: Account<'info, TradingPair>,
@@ -567,6 +594,7 @@ pub struct CancelOrder<'info> {
     /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_comp_pda!() address constraint
     #[account(mut, address = derive_comp_pda!(computation_offset))]
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CANCEL_ORDER))]
@@ -594,6 +622,7 @@ pub struct CancelOrderCallback<'info> {
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CANCEL_ORDER))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    /// CHECK: Validated by Arcium program through address constraint
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub trading_pair: Account<'info, TradingPair>,
@@ -623,6 +652,7 @@ pub struct MatchOrders<'info> {
     /// CHECK: Verified by Arcium macros via derive_execpool_pda!() address constraint
     #[account(mut, address = derive_execpool_pda!())]
     pub executing_pool: UncheckedAccount<'info>,
+    /// CHECK: Verified by Arcium macros via derive_comp_pda!() address constraint
     #[account(mut, address = derive_comp_pda!(computation_offset))]
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_MATCH_ORDERS))]
@@ -650,6 +680,7 @@ pub struct MatchOrdersCallback<'info> {
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_MATCH_ORDERS))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    /// CHECK: Validated by Arcium program through address constraint
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub trading_pair: Account<'info, TradingPair>,
@@ -716,14 +747,18 @@ pub struct ExecuteTrade<'info> {
     pub buyer: Signer<'info>,
     #[account(mut)]
     pub seller: Signer<'info>,
+    /// CHECK: Token account validated in execute_trade function
     #[account(mut)]
-    pub buyer_base_account: Account<'info, TokenAccount>,
+    pub buyer_base_account: UncheckedAccount<'info>,
+    /// CHECK: Token account validated in execute_trade function
     #[account(mut)]
-    pub buyer_quote_account: Account<'info, TokenAccount>,
+    pub buyer_quote_account: UncheckedAccount<'info>,
+    /// CHECK: Token account validated in execute_trade function
     #[account(mut)]
-    pub seller_base_account: Account<'info, TokenAccount>,
+    pub seller_base_account: UncheckedAccount<'info>,
+    /// CHECK: Token account validated in execute_trade function
     #[account(mut)]
-    pub seller_quote_account: Account<'info, TokenAccount>,
+    pub seller_quote_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
 }
 

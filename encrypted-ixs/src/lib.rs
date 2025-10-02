@@ -178,51 +178,121 @@ mod circuits {
         book_ctxt.owner.from_arcis(book)
     }
 
+    /// Helper function to remove filled orders and compact the order arrays
+    fn compact_orders(book: &mut OrderBook, buy_filled: &[bool; 10], sell_filled: &[bool; 10]) {
+        // Compact buy orders - remove filled orders and shift remaining ones
+        let mut write_idx = 0u8;
+        for read_idx in 0..10 {
+            let should_keep = read_idx < book.buy_count &&
+                             !buy_filled[read_idx as usize] &&
+                             book.buy_orders[read_idx as usize].quantity > 0;
+
+            if should_keep {
+                if write_idx != read_idx {
+                    book.buy_orders[write_idx as usize] = book.buy_orders[read_idx as usize];
+                }
+                write_idx += 1;
+            }
+        }
+        book.buy_count = write_idx;
+
+        // Compact sell orders - remove filled orders and shift remaining ones
+        write_idx = 0;
+        for read_idx in 0..10 {
+            let should_keep = read_idx < book.sell_count &&
+                             !sell_filled[read_idx as usize] &&
+                             book.sell_orders[read_idx as usize].quantity > 0;
+
+            if should_keep {
+                if write_idx != read_idx {
+                    book.sell_orders[write_idx as usize] = book.sell_orders[read_idx as usize];
+                }
+                write_idx += 1;
+            }
+        }
+        book.sell_count = write_idx;
+    }
+
     #[instruction]
     pub fn match_orders(
         book_ctxt: Enc<Mxe, OrderBook>,
         timestamp: u64,
     ) -> Enc<Mxe, MatchResult> {
-        let book = book_ctxt.to_arcis();
+        let mut book = book_ctxt.to_arcis();
         let mut trades = [Trade::new(); 5];
         let mut trade_count = 0u8;
 
-        // Simplified matching algorithm for Arcium constraints
-        // Check first few orders for matches without continue statements
-        for i in 0..5 {
-            let should_check_i = i < book.buy_count && trade_count < 5;
-            if should_check_i {
-                for j in 0..5 {
-                    let should_check_j = j < book.sell_count && trade_count < 5;
-                    if should_check_j {
-                        let buy_order = &book.buy_orders[i as usize];
-                        let sell_order = &book.sell_orders[j as usize];
+        // Track which orders have been fully filled
+        let mut buy_filled = [false; 10];
+        let mut sell_filled = [false; 10];
 
-                        let can_match = buy_order.price >= sell_order.price &&
-                                       buy_order.quantity > 0 &&
-                                       sell_order.quantity > 0;
+        // Iterate through buy orders - match each buy against all sells
+        for buy_idx in 0..10 {
+            let should_process_buy = buy_idx < book.buy_count && trade_count < 5;
 
-                        if can_match {
-                            let trade_price = sell_order.price;
-                            let trade_quantity = if buy_order.quantity < sell_order.quantity {
-                                buy_order.quantity
-                            } else {
-                                sell_order.quantity
-                            };
+            if should_process_buy {
+                let mut buy_order = book.buy_orders[buy_idx as usize];
+                let buy_is_active = !buy_filled[buy_idx as usize] && buy_order.quantity > 0;
 
-                            trades[trade_count as usize] = Trade {
-                                buyer_id: buy_order.trader_id,
-                                seller_id: sell_order.trader_id,
-                                price: trade_price,
-                                quantity: trade_quantity,
-                                timestamp,
-                            };
-                            trade_count += 1;
+                if buy_is_active {
+                    // Find matching sell orders
+                    for sell_idx in 0..10 {
+                        let should_process_sell = sell_idx < book.sell_count &&
+                                                 trade_count < 5 &&
+                                                 buy_order.quantity > 0;
+
+                        if should_process_sell {
+                            let mut sell_order = book.sell_orders[sell_idx as usize];
+                            let sell_is_active = !sell_filled[sell_idx as usize] && sell_order.quantity > 0;
+
+                            // Price match condition: buy price >= sell price
+                            let prices_match = buy_order.price >= sell_order.price;
+
+                            if sell_is_active && prices_match {
+                                // Determine trade quantity (minimum of buy and sell quantities)
+                                let trade_quantity = if buy_order.quantity < sell_order.quantity {
+                                    buy_order.quantity
+                                } else {
+                                    sell_order.quantity
+                                };
+
+                                // Use sell price (provides price improvement for buyer)
+                                let trade_price = sell_order.price;
+
+                                // Record the trade
+                                trades[trade_count as usize] = Trade {
+                                    buyer_id: buy_order.trader_id,
+                                    seller_id: sell_order.trader_id,
+                                    price: trade_price,
+                                    quantity: trade_quantity,
+                                    timestamp,
+                                };
+                                trade_count += 1;
+
+                                // Update order quantities after match
+                                buy_order.quantity -= trade_quantity;
+                                sell_order.quantity -= trade_quantity;
+
+                                // Mark orders as filled if quantity reaches zero
+                                if buy_order.quantity == 0 {
+                                    buy_filled[buy_idx as usize] = true;
+                                }
+                                if sell_order.quantity == 0 {
+                                    sell_filled[sell_idx as usize] = true;
+                                }
+
+                                // Update orders in the book
+                                book.buy_orders[buy_idx as usize] = buy_order;
+                                book.sell_orders[sell_idx as usize] = sell_order;
+                            }
                         }
                     }
                 }
             }
         }
+
+        // Remove filled orders from the book and compact arrays
+        compact_orders(&mut book, &buy_filled, &sell_filled);
 
         let result = MatchResult {
             trades,

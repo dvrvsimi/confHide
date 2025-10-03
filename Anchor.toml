@@ -8,11 +8,15 @@ skip-lint = false
 [programs.localnet]
 conf_hide = "5AVcTFBTCbR8CYcJYcqp7FgszwQMgEh5TySAUspb7y4E"
 
+[programs.devnet]
+conf_hide = "FtJt3sRDe5cGjRMFQg1Z2ngcsTfccYe3E8CtnFaC6P8e"
+
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
 cluster = "localnet"
+# cluster = "https://devnet.helius-rpc.com/?api-key=7a7f0ff8-ed33-47f4-be16-b83f362d2554"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

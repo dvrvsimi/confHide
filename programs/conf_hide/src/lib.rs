@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use arcium_anchor::prelude::*;
-use arcium_client::idl::arcium::types::CallbackAccount;
 
 // Computation definition offsets for our MPC instructions
 const COMP_DEF_OFFSET_INIT_ORDER_BOOK: u32 = comp_def_offset("init_order_book");
@@ -9,7 +8,7 @@ const COMP_DEF_OFFSET_SUBMIT_ORDER: u32 = comp_def_offset("submit_order");
 const COMP_DEF_OFFSET_CANCEL_ORDER: u32 = comp_def_offset("cancel_order");
 const COMP_DEF_OFFSET_MATCH_ORDERS: u32 = comp_def_offset("match_orders");
 
-declare_id!("5AVcTFBTCbR8CYcJYcqp7FgszwQMgEh5TySAUspb7y4E");
+declare_id!("FtJt3sRDe5cGjRMFQg1Z2ngcsTfccYe3E8CtnFaC6P8e");
 
 #[arcium_program]
 pub mod conf_hide {
@@ -112,6 +111,12 @@ pub mod conf_hide {
         encrypted_is_buy: [u8; 32],
         encrypted_trader_id: [u8; 32],
     ) -> Result<()> {
+        // Validate trading pair ID matches the account
+        require!(
+            ctx.accounts.trading_pair.trading_pair_id == trading_pair_id,
+            ErrorCode::InvalidTradingPairId
+        );
+
         require!(
             ctx.accounts.trading_pair.is_active,
             ErrorCode::TradingPairInactive
@@ -218,6 +223,12 @@ pub mod conf_hide {
         encrypted_order_id: [u8; 32],
         encrypted_trader_id: [u8; 32],
     ) -> Result<()> {
+        // Validate trading pair ID matches the account
+        require!(
+            ctx.accounts.trading_pair.trading_pair_id == trading_pair_id,
+            ErrorCode::InvalidTradingPairId
+        );
+
         require!(
             ctx.accounts.trading_pair.is_active,
             ErrorCode::TradingPairInactive
@@ -277,6 +288,12 @@ pub mod conf_hide {
         computation_offset: u64,
         trading_pair_id: u64,
     ) -> Result<()> {
+        // Validate trading pair ID matches the account
+        require!(
+            ctx.accounts.trading_pair.trading_pair_id == trading_pair_id,
+            ErrorCode::InvalidTradingPairId
+        );
+
         require!(
             ctx.accounts.trading_pair.is_active,
             ErrorCode::TradingPairInactive
@@ -498,8 +515,10 @@ pub struct InitializeTradingPair<'info> {
 #[derive(Accounts)]
 pub struct InitOrderBookCallback<'info> {
     pub arcium_program: Program<'info, Arcium>,
+
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_INIT_ORDER_BOOK))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: Validated by Arcium program through address constraint
     pub instructions_sysvar: AccountInfo<'info>,
@@ -551,9 +570,11 @@ pub struct SubmitOrder<'info> {
     )]
     pub trading_pair: Account<'info, TradingPair>,
     // User's token accounts for balance validation
-    /// CHECK: Optional user base token account for balance validation
+    /// CHECK: Optional user base token account - when provided, validated in submit_order by deserializing
+    /// as TokenAccount and checking mint matches trading_pair.base_mint and owner matches payer
     pub user_base_token_account: Option<UncheckedAccount<'info>>,
-    /// CHECK: Optional user quote token account for balance validation
+    /// CHECK: Optional user quote token account - when provided, validated in submit_order by deserializing
+    /// as TokenAccount and checking mint matches trading_pair.quote_mint and owner matches payer
     pub user_quote_token_account: Option<UncheckedAccount<'info>>,
 }
 
@@ -694,6 +715,7 @@ pub struct InitOrderBookCompDef<'info> {
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: Computation definition account will be initialized by Arcium's init_comp_def function
     #[account(mut)]
     pub comp_def_account: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
@@ -707,6 +729,7 @@ pub struct InitSubmitOrderCompDef<'info> {
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: Computation definition account will be initialized by Arcium's init_comp_def function
     #[account(mut)]
     pub comp_def_account: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
@@ -720,6 +743,7 @@ pub struct InitCancelOrderCompDef<'info> {
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: Computation definition account will be initialized by Arcium's init_comp_def function
     #[account(mut)]
     pub comp_def_account: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
@@ -733,6 +757,7 @@ pub struct InitMatchOrdersCompDef<'info> {
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
     pub mxe_account: Box<Account<'info, MXEAccount>>,
+    /// CHECK: Computation definition account will be initialized by Arcium's init_comp_def function
     #[account(mut)]
     pub comp_def_account: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
@@ -747,16 +772,20 @@ pub struct ExecuteTrade<'info> {
     pub buyer: Signer<'info>,
     #[account(mut)]
     pub seller: Signer<'info>,
-    /// CHECK: Token account validated in execute_trade function
+    /// CHECK: Buyer's base token account - validated in execute_trade by deserializing as TokenAccount,
+    /// checking mint matches trading_pair.base_mint, owner matches buyer, and sufficient balance
     #[account(mut)]
     pub buyer_base_account: UncheckedAccount<'info>,
-    /// CHECK: Token account validated in execute_trade function
+    /// CHECK: Buyer's quote token account - validated in execute_trade by deserializing as TokenAccount,
+    /// checking mint matches trading_pair.quote_mint, owner matches buyer, and sufficient balance
     #[account(mut)]
     pub buyer_quote_account: UncheckedAccount<'info>,
-    /// CHECK: Token account validated in execute_trade function
+    /// CHECK: Seller's base token account - validated in execute_trade by deserializing as TokenAccount,
+    /// checking mint matches trading_pair.base_mint, owner matches seller, and sufficient balance
     #[account(mut)]
     pub seller_base_account: UncheckedAccount<'info>,
-    /// CHECK: Token account validated in execute_trade function
+    /// CHECK: Seller's quote token account - validated in execute_trade by deserializing as TokenAccount,
+    /// checking mint matches trading_pair.quote_mint, owner matches seller, and sufficient balance
     #[account(mut)]
     pub seller_quote_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
@@ -817,4 +846,6 @@ pub enum ErrorCode {
     InvalidTokenAccount,
     #[msg("Insufficient balance")]
     InsufficientBalance,
+    #[msg("Invalid trading pair ID")]
+    InvalidTradingPairId,
 }

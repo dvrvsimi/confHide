@@ -24,6 +24,7 @@ import {
   getCompDefAccAddress,
   getExecutingPoolAccAddress,
   getComputationAccAddress,
+  getClusterAccAddress,
   x25519,
 } from "@arcium-hq/client";
 import * as fs from "fs";
@@ -50,20 +51,54 @@ describe("ConfHide - Privacy Trading Platform", () => {
     return event;
   };
 
-  const arciumEnv = getArciumEnv();
+  // Determine cluster configuration based on environment
+  const isLocalnet = provider.connection.rpcEndpoint.includes("127.0.0.1") ||
+                     provider.connection.rpcEndpoint.includes("localhost");
+
+  // For localnet, use getArciumEnv(). For devnet, use the cluster offset from deployment
+  const DEVNET_CLUSTER_OFFSET = 1078779259; // are there differences?
+  const arciumEnv = isLocalnet ? getArciumEnv() : null;
+  const clusterAccount = isLocalnet
+    ? arciumEnv!.arciumClusterPubkey
+    : getClusterAccAddress(DEVNET_CLUSTER_OFFSET);
 
   it("can submit and match orders privately!", async () => {
+    console.log("Test starting...");
+    console.log("RPC Endpoint:", provider.connection.rpcEndpoint);
+    console.log("Is Localnet:", isLocalnet);
+    console.log("Cluster Account:", clusterAccount.toBase58());
+
     const payer = readKpJson(`${os.homedir()}/.config/solana/id.json`);
+    console.log("Loaded payer:", payer.publicKey.toBase58());
+
     const trader1 = anchor.web3.Keypair.generate();
     const trader2 = anchor.web3.Keypair.generate();
+    console.log("Generated trader keypairs");
 
-    // Airdrop SOL to test accounts
-    console.log("Setting up test accounts...");
-    await provider.connection.requestAirdrop(trader1.publicKey, 2 * LAMPORTS_PER_SOL);
-    await provider.connection.requestAirdrop(trader2.publicKey, 2 * LAMPORTS_PER_SOL);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Fund test accounts from payer (airdrops fail on devnet)
+    console.log("Funding test accounts from payer...");
+
+    // Transfer SOL from payer to test accounts
+    const transferIx1 = anchor.web3.SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: trader1.publicKey,
+      lamports: 2 * LAMPORTS_PER_SOL,
+    });
+    const transferIx2 = anchor.web3.SystemProgram.transfer({
+      fromPubkey: payer.publicKey,
+      toPubkey: trader2.publicKey,
+      lamports: 2 * LAMPORTS_PER_SOL,
+    });
+    console.log("Created transfer instructions");
+
+    const tx = new anchor.web3.Transaction().add(transferIx1, transferIx2);
+    console.log("Sending transaction...");
+    await provider.sendAndConfirm(tx, [payer]);
+    console.log("Funded traders successfully");
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Create token mints
+    console.log("Creating token mints...");
     const baseMint = await createMint(
       provider.connection,
       payer,
@@ -71,6 +106,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
       null,
       9 // 9 decimals like SOL
     );
+    console.log("Base mint created:", baseMint.toBase58());
 
     const quoteMint = await createMint(
       provider.connection,
@@ -79,6 +115,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
       null,
       6 // 6 decimals like USDC
     );
+    console.log("Quote mint created:", quoteMint.toBase58());
 
     // Create token accounts for traders
     const trader1BaseAccount = await createAccount(
@@ -206,7 +243,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
           program.programId,
           pairComputationOffset
         ),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -231,7 +268,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
 
     const initEvent = await initEventPromise;
     expect(initEvent.tradingPairId.toString()).to.equal(tradingPairId.toString());
-    console.log("✅ Trading pair created with encrypted order book");
+    console.log("Trading pair created with encrypted order book");
 
     // Submit buy order
     console.log("Submitting encrypted buy order...");
@@ -275,7 +312,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
           program.programId,
           buyComputationOffset
         ),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -345,7 +382,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
           program.programId,
           sellComputationOffset
         ),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -385,7 +422,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
           program.programId,
           matchComputationOffset
         ),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -410,7 +447,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
 
     const matchEvent = await matchEventPromise;
     expect(matchEvent.tradingPairId.toString()).to.equal(tradingPairId.toString());
-    console.log("✅ Orders matched privately - trades revealed");
+    console.log("Orders matched privately - trades revealed");
 
     // Execute trade
     console.log("Executing token transfers...");
@@ -440,7 +477,7 @@ describe("ConfHide - Privacy Trading Platform", () => {
     const tradeEvent = await tradeEventPromise;
     expect(tradeEvent.buyerId.toString()).to.equal(buyerId.toString());
     expect(tradeEvent.sellerId.toString()).to.equal(sellerId.toString());
-    console.log("✅ Trade executed with token transfers");
+    console.log("Trade executed with token transfers");
 
     // Verify balances
     const trader1Base = await getAccount(provider.connection, trader1BaseAccount);
